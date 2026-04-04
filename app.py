@@ -213,6 +213,22 @@ class E:
         return dict(total=vals,net=net,car=np.zeros(p.N))
 
     # ── Closed-form ───────────────────────────────────────────
+
+    def sens(s, nys, ers):
+        """2D sensitivity: NCD yield × Equity return → Net Wealth."""
+        p=s.p; rows=[]
+        for ny in nys:
+            row={}
+            for er in ers:
+                sip_=p.principal*ny/12*(1-p.tds_rate)
+                rm=(1+er-p.expense_ratio)**(1/12)-1
+                fv=sip_*((1+rm)**p.N-1)/rm if rm!=0 else sip_*p.N
+                v=p.principal+fv; v-=p.principal*ny*p.horizon*p.et
+                g=fv-sip_*p.N; v-=max(0,(g-p.ltcg_exempt*p.horizon))*p.ltcg_rate
+                row[f'{er:.0%}']=v
+            rows.append(row)
+        return pd.DataFrame(rows, index=[f'{y:.1%}' for y in nys])
+
     def cf(s, sip=None, er=None):
         p=s.p; S=sip or p.nm; r=(1+(er if er is not None else p.ne))**(1/12)-1
         return S*((1+r)**p.N-1)/r if r!=0 else S*p.N
@@ -398,7 +414,7 @@ def main():
         fig.add_trace(go.Scatter(x=months,y=pfd['total'],name='D: Pure FD',line=dict(color=C['mu'],width=1.2,dash='dot')))
         fig.add_trace(go.Scatter(x=months,y=sv['total'],name='E: Savings',line=dict(color=C['rd'],width=1,dash='dot')))
         fig.add_hline(y=p.principal,line_dash='dot',line_color=C['mu'],annotation_text='Original Capital')
-        st.plotly_chart(_lo(fig,'Total Wealth — 5 Strategies Compared',480),use_container_width=True)
+        st.plotly_chart(_lo(fig,'Total Wealth — 5 Strategies Compared',480),width='stretch')
 
         # Scorecard
         st.markdown('## Scorecard — Net of All Taxes')
@@ -426,7 +442,7 @@ def main():
             increasing=dict(marker=dict(color=C['gn'])),totals=dict(marker=dict(color=C['g'])),
             textposition='outside',text=[fs(dec['principal']),fs(dec['interest']),fs(dec['compounding']),fs(dec['total'])],
             textfont=dict(color=C['t2'],size=9)))
-        st.plotly_chart(_lo(fig_d,'Wealth Decomposition — Source of Each Rupee',400),use_container_width=True)
+        st.plotly_chart(_lo(fig_d,'Wealth Decomposition — Source of Each Rupee',400),width='stretch')
 
         # The real insight
         st.markdown(f'<div class="th"><strong>Why consider the NCD system over lump sum equity?</strong><br>Lump sum equity returns {fs(ls["total"][N])} (net {fs(ls["net"][N])}) — potentially higher. But <strong>{fs(p.principal)} is at full equity risk from day 1.</strong> A 50% crash in year 1 means you\'re sitting on {fs(p.principal*0.5)}.<br><br>The NCD system puts <strong>only {fs(nd["car"][N])} into equity</strong> (accumulated over {p.horizon} years via SIP). The {fs(p.principal)} stays in debt. A 50% crash hurts less, and DCA means you buy more at lower prices. The tradeoff: lower peak return for significantly lower capital-at-risk.</div>',unsafe_allow_html=True)
@@ -444,7 +460,7 @@ def main():
         fig_n.add_trace(go.Scatter(x=list(range(1,p.horizon+1)),y=[fd['net'][m] for m in y_months],name='FD+Eq',mode='lines+markers',line=dict(color=C['or_'],width=1.5,dash='dashdot'),marker=dict(size=4)))
         fig_n.add_hline(y=p.principal,line_dash='dot',line_color=C['mu'])
         fig_n.update_layout(xaxis_title='Year',yaxis_title='Net Wealth (₹)')
-        st.plotly_chart(_lo(fig_n,'Post-Tax Net Wealth — Year by Year',440),use_container_width=True)
+        st.plotly_chart(_lo(fig_n,'Post-Tax Net Wealth — Year by Year',440),width='stretch')
 
         # Comparison table
         st.markdown('### Year-End Table')
@@ -455,7 +471,7 @@ def main():
                         'FD+Eq Net':fs(fd['net'][m]),'NCD CAGR':fp((nd['total'][m]/p.principal)**(1/yr)-1),
                         'NCD vs Lump':fs(nd['net'][m]-ls['net'][m]),
                         'Capital-at-Risk (NCD)':fs(nd['car'][m])})
-        st.dataframe(pd.DataFrame(tbl),use_container_width=True,hide_index=True)
+        st.dataframe(pd.DataFrame(tbl),width='stretch',hide_index=True)
 
         st.markdown('### Advantage Analysis')
         adv_ncd_ls = [nd['net'][yr*12-1]-ls['net'][yr*12-1] for yr in range(1,p.horizon+1)]
@@ -464,7 +480,7 @@ def main():
         fig_a.add_trace(go.Bar(x=list(range(1,p.horizon+1)),y=adv_ncd_ls,name='NCD vs Lump Sum',marker_color=[C['gn'] if v>=0 else C['rd'] for v in adv_ncd_ls]))
         fig_a.add_trace(go.Bar(x=list(range(1,p.horizon+1)),y=adv_ncd_fd,name='NCD vs FD+Eq',marker_color=C['cy'],opacity=.5))
         fig_a.update_layout(barmode='group',xaxis_title='Year',yaxis_title='Advantage (₹)')
-        st.plotly_chart(_lo(fig_a,'NCD System Advantage (green=NCD wins, red=Lump sum wins)',400),use_container_width=True)
+        st.plotly_chart(_lo(fig_a,'NCD System Advantage (green=NCD wins, red=Lump sum wins)',400),width='stretch')
 
         # Sensitivity
         st.markdown('### Sensitivity Matrix (Net Wealth of NCD System)')
@@ -472,7 +488,7 @@ def main():
         z=sens.values/1e5
         fgs=go.Figure(go.Heatmap(z=z,x=sens.columns.tolist(),y=sens.index.tolist(),colorscale=[[0,'#1B2A4A'],[.5,'#FFC300'],[1,'#FF5252']],text=[[f'₹{v:.1f}L' for v in r] for r in z],texttemplate='%{text}',textfont=dict(size=10,color='white'),colorbar=dict(title='₹L')))
         fgs.update_layout(xaxis_title='Equity Return',yaxis_title='NCD Yield')
-        st.plotly_chart(_lo(fgs,'Net Wealth — NCD Yield × Equity Return',420),use_container_width=True)
+        st.plotly_chart(_lo(fgs,'Net Wealth — NCD Yield × Equity Return',420),width='stretch')
 
     # ── TAB 3: STRESS TEST ────────────────────────────────────
     with t3:
@@ -486,13 +502,13 @@ def main():
             cb=[C['gn'] if r>=0 else C['rd'] for r in ar]
             fb=go.Figure(go.Bar(x=list(range(1,p.horizon+1)),y=ar*100,marker_color=cb,text=[fp(r) for r in ar],textposition='outside',textfont=dict(size=9,color=C['t2'])))
             fb.update_layout(xaxis_title='Year',yaxis_title='%',yaxis=dict(zeroline=True,zerolinecolor=C['mu']))
-            st.plotly_chart(_lo(fb,'Random Annual Returns',360),use_container_width=True)
+            st.plotly_chart(_lo(fb,'Random Annual Returns',360),width='stretch')
         with cr:
             fp2=go.Figure()
             fp2.add_trace(go.Scatter(x=months,y=feat['ncd_path'],name='NCD System',line=dict(color=C['g'],width=2.5)))
             fp2.add_trace(go.Scatter(x=months,y=feat['ls_path'],name='Lump Sum',line=dict(color=C['cy'],width=2,dash='dash')))
             fp2.add_hline(y=p.principal,line_dash='dot',line_color=C['mu'])
-            st.plotly_chart(_lo(fp2,'Path: NCD vs Lump Sum',360),use_container_width=True)
+            st.plotly_chart(_lo(fp2,'Path: NCD vs Lump Sum',360),width='stretch')
 
         m1,m2,m3,m4=st.columns(4)
         m1.metric('NCD Net',fs(feat['ncd_net']))
@@ -510,7 +526,7 @@ def main():
             fm.add_trace(go.Scatter(x=months,y=r['ncd_path'],showlegend=(i==0),name='NCD' if i==0 else None,legendgroup='n',line=dict(color=C['g'],width=.7),opacity=.35))
             fm.add_trace(go.Scatter(x=months,y=r['ls_path'],showlegend=(i==0),name='Lump Sum' if i==0 else None,legendgroup='l',line=dict(color=C['cy'],width=.6),opacity=.25))
         fm.add_hline(y=p.principal,line_dash='dot',line_color=C['mu'])
-        st.plotly_chart(_lo(fm,'25 Paths — NCD (gold) vs Lump Sum (cyan)',460),use_container_width=True)
+        st.plotly_chart(_lo(fm,'25 Paths — NCD (gold) vs Lump Sum (cyan)',460),width='stretch')
         s1,s2,s3,s4=st.columns(4)
         na_=np.array(nw); la_=np.array(lw)
         s1.metric('NCD Mean',fs(na_.mean()))
@@ -532,7 +548,7 @@ def main():
                                  'NCD Net':fs(r['ncd_net']),'Lump Net':fs(r['ls_net']),
                                  'Winner':w,'Margin':fs(abs(r['ncd_net']-r['ls_net']))})
             hdf=pd.DataFrame(htbl)
-            st.dataframe(hdf,use_container_width=True,hide_index=True)
+            st.dataframe(hdf,width='stretch',hide_index=True)
             ncd_wins=sum(1 for r in htbl if r['Winner']=='NCD')
             st.markdown(f'<div class="th">Across {len(htbl)} historical {p.horizon}-year windows: <strong>NCD system won {ncd_wins}/{len(htbl)} times</strong>. Lump sum equity tends to win in strong bull markets (2005-2014), while NCD system shows resilience through volatile periods by preserving capital and DCA-ing into drawdowns.</div>',unsafe_allow_html=True)
         else:
@@ -554,20 +570,20 @@ def main():
                 fig.add_trace(go.Scatter(x=np.concatenate([m,m[::-1]]),y=np.concatenate([d[75],d[25][::-1]]),fill='toself',fillcolor=f'rgba({rgb},.12)',line=dict(color='rgba(0,0,0,0)'),name='25th–75th',hoverinfo='skip'))
                 fig.add_trace(go.Scatter(x=m,y=d[50],name='Median',line=dict(color=clr,width=2.5)))
                 fig.add_hline(y=p.principal,line_dash='dot',line_color=C['mu'])
-                st.plotly_chart(_lo(fig,title,400),use_container_width=True)
+                st.plotly_chart(_lo(fig,title,400),width='stretch')
 
         fh=go.Figure()
         fh.add_trace(go.Histogram(x=mc['fn']/1e5,nbinsx=60,name='NCD Net',marker_color=C['g'],opacity=.6))
         fh.add_trace(go.Histogram(x=mc['ln']/1e5,nbinsx=60,name='Lump Net',marker_color=C['cy'],opacity=.4))
         fh.update_layout(barmode='overlay',xaxis_title='Net Wealth (₹L)',yaxis_title='Freq')
-        st.plotly_chart(_lo(fh,'Terminal Distribution — Net of Tax',380),use_container_width=True)
+        st.plotly_chart(_lo(fh,'Terminal Distribution — Net of Tax',380),width='stretch')
 
         st.markdown('### Percentile Table')
         ptbl=[]
         for k in [5,10,25,50,75,90,95]:
             ptbl.append({'Pctl':f'{k}th','NCD Net':fs(mc['pn'][k]),'Lump Net':fs(mc['lpn'][k]),'SIP Net':fs(mc['spn'][k]),
                          'NCD vs Lump':fs(mc['pn'][k]-mc['lpn'][k])})
-        st.dataframe(pd.DataFrame(ptbl),use_container_width=True,hide_index=True)
+        st.dataframe(pd.DataFrame(ptbl),width='stretch',hide_index=True)
 
         st.markdown('### Risk Metrics')
         r1,r2,r3,r4=st.columns(4)
@@ -583,7 +599,7 @@ def main():
         fd_=go.Figure(go.Histogram(x=mc['dd']*100,nbinsx=60,marker_color=C['rd'],opacity=.6))
         fd_.add_vline(x=met['md']*100,line_dash='dash',line_color=C['g'],annotation_text=f'Med: {fp(met["md"],1)}')
         fd_.update_layout(xaxis_title='Max DD (%)',yaxis_title='Freq')
-        st.plotly_chart(_lo(fd_,'Max Drawdown Distribution (NCD System)',330),use_container_width=True)
+        st.plotly_chart(_lo(fd_,'Max Drawdown Distribution (NCD System)',330),width='stretch')
 
     # ── TAB 5: TAX ────────────────────────────────────────────
     with t5:
@@ -599,7 +615,7 @@ def main():
             totals=dict(marker=dict(color=C['g'])),textposition='outside',
             text=[fs(ai),fs(nd['g'][N]),fs(nd['tax_int'][N]),fs(nd['ltcg'][N]),fs(nd['net'][N])],
             textfont=dict(color=C['t2'],size=9)))
-        st.plotly_chart(_lo(fw,'NCD System — Income to Net Wealth',400),use_container_width=True)
+        st.plotly_chart(_lo(fw,'NCD System — Income to Net Wealth',400),width='stretch')
 
         st.markdown('### Tax Comparison')
         ttbl=pd.DataFrame({'':['Total Wealth','Total Tax','Net Wealth','Tax Rate','Capital-at-Risk'],
@@ -607,7 +623,7 @@ def main():
             'Lump Sum':[fi(ls['total'][N]),fi(ls['ltcg'][N]),fi(ls['net'][N]),fp(ls['ltcg'][N]/ls['total'][N] if ls['total'][N]>0 else 0),fi(p.principal)],
             f'FD+Eq':[fi(fd['total'][N]),fi(fd['ttax'][N]),fi(fd['net'][N]),fp(fd['ttax'][N]/fd['total'][N]),fi(fd['car'][N])],
             'Pure FD':[fi(pfd['total'][N]),fi(pfd['total'][N]-pfd['net'][N]),fi(pfd['net'][N]),fp((pfd['total'][N]-pfd['net'][N])/pfd['total'][N]),'₹0']})
-        st.dataframe(ttbl,use_container_width=True,hide_index=True)
+        st.dataframe(ttbl,width='stretch',hide_index=True)
 
         td=nd['ttax'][N]-ls['ltcg'][N]
         st.markdown(f'<div class="th"><strong>NCD system pays {fs(td)} more tax</strong> than lump sum ({fi(nd["ttax"][N])} vs {fi(ls["ltcg"][N])}). This is the cost of the yield-arbitrage structure — interest is taxed at slab rate ({fp(p.et,1)}) while equity gains get concessional LTCG ({fp(p.ltcg_rate,1)}). The tradeoff: higher tax for dramatically lower capital-at-risk ({fs(nd["car"][N])} vs {fs(p.principal)}).<br><br><strong>LTCG Harvesting:</strong> The model applies {fi(p.ltcg_exempt)} exemption per financial year (not once at terminal). Annual harvest-and-reinvest saves up to {fi(p.ltcg_exempt*p.ltcg_rate)}/year.</div>',unsafe_allow_html=True)

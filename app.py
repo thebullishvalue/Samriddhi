@@ -251,9 +251,43 @@ class E:
             mr=np.exp(np.random.normal(mu,sig,p.N))-1
             ar=[np.prod(1+mr[y*12:(y+1)*12])-1 for y in range(p.horizon)]
             ncd=s.ncd_sys(monthly_r=mr); ls=s.lumpsum_eq(monthly_r=mr)
+            # Max drawdown & underwater for NCD
+            ncd_peak=np.maximum.accumulate(ncd['total'])
+            ncd_dd=(ncd['total']-ncd_peak)/ncd_peak
+            ncd_mdd=ncd_dd.min(); ncd_mdd_month=int(np.argmin(ncd_dd))+1
+            ncd_underwater=np.sum(ncd_dd<-0.001)  # months below peak
+            # Max drawdown & underwater for lump sum
+            ls_peak=np.maximum.accumulate(ls['total'])
+            ls_dd=(ls['total']-ls_peak)/ls_peak
+            ls_mdd=ls_dd.min(); ls_mdd_month=int(np.argmin(ls_dd))+1
+            ls_underwater=np.sum(ls_dd<-0.001)
+            # Rolling 3-year CAGR at each year-end (where available)
+            rolling3=[]
+            for yr in range(3,p.horizon+1):
+                start_m=(yr-3)*12; end_m=yr*12-1
+                r3_ncd=(ncd['total'][end_m]/ncd['total'][start_m])**(1/3)-1 if ncd['total'][start_m]>0 else 0
+                r3_ls=(ls['total'][end_m]/ls['total'][start_m])**(1/3)-1 if ls['total'][start_m]>0 else 0
+                rolling3.append(dict(year=yr,ncd_r3=r3_ncd,ls_r3=r3_ls))
+            # Year-end leader
+            yr_leader=['NCD' if ncd['total'][y*12-1]>ls['total'][y*12-1] else 'Lump' for y in range(1,p.horizon+1)]
+            ncd_lead_yrs=sum(1 for x in yr_leader if x=='NCD')
+            # Realized CAGR
+            ncd_cagr=(ncd['total'][-1]/p.principal)**(1/p.horizon)-1
+            ls_cagr=(ls['total'][-1]/p.principal)**(1/p.horizon)-1
+            # Capital-at-risk path
+            ncd_car_path=ncd['car']
             res.append(dict(mr=mr,ar=np.array(ar),
-                            ncd_path=ncd['total'],ncd_net=ncd['net'][-1],
-                            ls_path=ls['total'],ls_net=ls['net'][-1]))
+                ncd_path=ncd['total'],ncd_net=ncd['net'][-1],ncd_total=ncd['total'][-1],
+                ncd_mf=ncd['mf'][-1],ncd_car=ncd['car'][-1],
+                ncd_dd=ncd_dd,ncd_mdd=ncd_mdd,ncd_mdd_month=ncd_mdd_month,ncd_uw=ncd_underwater,
+                ls_path=ls['total'],ls_net=ls['net'][-1],ls_total=ls['total'][-1],
+                ls_dd=ls_dd,ls_mdd=ls_mdd,ls_mdd_month=ls_mdd_month,ls_uw=ls_underwater,
+                rolling3=rolling3,yr_leader=yr_leader,ncd_lead_yrs=ncd_lead_yrs,
+                ncd_cagr=ncd_cagr,ls_cagr=ls_cagr,ncd_car_path=ncd_car_path,
+                ncd_year_vals=[ncd['total'][y*12-1] for y in range(1,p.horizon+1)],
+                ls_year_vals=[ls['total'][y*12-1] for y in range(1,p.horizon+1)],
+                ncd_net_vals=[ncd['net'][y*12-1] for y in range(1,p.horizon+1)],
+                ls_net_vals=[ls['net'][y*12-1] for y in range(1,p.horizon+1)]))
         return res
 
     def stress_historical(s, start_year):
@@ -450,93 +484,241 @@ def main():
     # ── TAB 2: COMPARE ────────────────────────────────────────
     with t2:
         st.markdown('## Detailed Comparison')
-        # Net wealth chart
+
+        # ── Comprehensive metrics table ──
+        st.markdown('### System Metrics Summary')
+        def _cagr(v,yr): return (v/p.principal)**(1/yr)-1 if v>0 and yr>0 else 0
+        sav_t=p.principal*(1+p.savings_rate)**p.horizon; sav_tax=(sav_t-p.principal)*p.et
+        comp_metrics = {
+            'Metric': [
+                'Total Wealth','Net of Tax','Tax Paid','Post-Tax CAGR',
+                'Money Multiple','Capital-at-Risk','Net / Capital-at-Risk',
+                'Tax Efficiency (Net/Gross)','Real Wealth (Inflation Adj.)',
+                'Real CAGR',
+            ],
+            'NCD System': [
+                fs(nd['total'][N]), fs(nd['net'][N]), fs(nd['ttax'][N]),
+                fp(_cagr(nd['net'][N],p.horizon)),
+                fx(nd['total'][N]/p.principal), fs(nd['car'][N]),
+                fx(nd['net'][N]/nd['car'][N]) if nd['car'][N]>0 else '—',
+                fp(nd['net'][N]/nd['total'][N]),
+                fs(nd['total'][N]/(1+p.inflation)**p.horizon),
+                fp(_cagr(nd['total'][N]/(1+p.inflation)**p.horizon,p.horizon)),
+            ],
+            'Lump Sum Equity': [
+                fs(ls['total'][N]), fs(ls['net'][N]), fs(ls['ltcg'][N]),
+                fp(_cagr(ls['net'][N],p.horizon)),
+                fx(ls['total'][N]/p.principal), fs(p.principal),
+                fx(ls['net'][N]/p.principal),
+                fp(ls['net'][N]/ls['total'][N]) if ls['total'][N]>0 else '—',
+                fs(ls['total'][N]/(1+p.inflation)**p.horizon),
+                fp(_cagr(ls['total'][N]/(1+p.inflation)**p.horizon,p.horizon)),
+            ],
+            f'FD+Eq ({fp(p.fd_rate,0)})': [
+                fs(fd['total'][N]), fs(fd['net'][N]), fs(fd['ttax'][N]),
+                fp(_cagr(fd['net'][N],p.horizon)),
+                fx(fd['total'][N]/p.principal), fs(fd['car'][N]),
+                fx(fd['net'][N]/fd['car'][N]) if fd['car'][N]>0 else '—',
+                fp(fd['net'][N]/fd['total'][N]),
+                fs(fd['total'][N]/(1+p.inflation)**p.horizon),
+                fp(_cagr(fd['total'][N]/(1+p.inflation)**p.horizon,p.horizon)),
+            ],
+            'Pure FD': [
+                fs(pfd['total'][N]), fs(pfd['net'][N]), fs(pfd['total'][N]-pfd['net'][N]),
+                fp(_cagr(pfd['net'][N],p.horizon)),
+                fx(pfd['total'][N]/p.principal), '₹0 equity risk',
+                '—',
+                fp(pfd['net'][N]/pfd['total'][N]),
+                fs(pfd['total'][N]/(1+p.inflation)**p.horizon),
+                fp(_cagr(pfd['total'][N]/(1+p.inflation)**p.horizon,p.horizon)),
+            ],
+        }
+        st.dataframe(pd.DataFrame(comp_metrics),width='stretch',hide_index=True)
+
+        # ── Net wealth chart ──
+        y_months=[y*12-1 for y in range(1,p.horizon+1)]
         fig_n=go.Figure()
-        for yr_idx in range(p.horizon):
-            m_idx=(yr_idx+1)*12-1
-        y_months = [y*12-1 for y in range(1,p.horizon+1)]
         fig_n.add_trace(go.Scatter(x=list(range(1,p.horizon+1)),y=[nd['net'][m] for m in y_months],name='NCD System',mode='lines+markers',line=dict(color=C['g'],width=2.5),marker=dict(size=6)))
         fig_n.add_trace(go.Scatter(x=list(range(1,p.horizon+1)),y=[ls['net'][m] for m in y_months],name='Lump Sum',mode='lines+markers',line=dict(color=C['cy'],width=2,dash='dash'),marker=dict(size=5)))
         fig_n.add_trace(go.Scatter(x=list(range(1,p.horizon+1)),y=[fd['net'][m] for m in y_months],name='FD+Eq',mode='lines+markers',line=dict(color=C['or_'],width=1.5,dash='dashdot'),marker=dict(size=4)))
         fig_n.add_hline(y=p.principal,line_dash='dot',line_color=C['mu'])
         fig_n.update_layout(xaxis_title='Year',yaxis_title='Net Wealth (₹)')
-        st.plotly_chart(_lo(fig_n,'Post-Tax Net Wealth — Year by Year',440),width='stretch')
+        st.plotly_chart(_lo(fig_n,'Post-Tax Net Wealth — Year by Year',420),width='stretch')
 
-        # Comparison table
-        st.markdown('### Year-End Table')
+        # ── Year-End Table ──
+        st.markdown('### Year-End Comparison')
         tbl=[]
         for yr in range(1,p.horizon+1):
-            m=yr*12-1
-            tbl.append({'Year':yr,'NCD Net':fs(nd['net'][m]),'Lump Net':fs(ls['net'][m]),
-                        'FD+Eq Net':fs(fd['net'][m]),'NCD CAGR':fp((nd['total'][m]/p.principal)**(1/yr)-1),
-                        'NCD vs Lump':fs(nd['net'][m]-ls['net'][m]),
-                        'Capital-at-Risk (NCD)':fs(nd['car'][m])})
+            m=yr*12-1; infl=(1+p.inflation)**yr
+            ncd_net_yr=nd['net'][m]; ls_net_yr=ls['net'][m]; fd_net_yr=fd['net'][m]
+            tbl.append({
+                'Year':yr,
+                'NCD Net':fs(ncd_net_yr),'Lump Net':fs(ls_net_yr),'FD Net':fs(fd_net_yr),
+                'NCD CAGR':fp(_cagr(nd['total'][m],yr)),
+                'NCD vs Lump':fs(ncd_net_yr-ls_net_yr),
+                'NCD Real':fs(nd['total'][m]/infl),
+                'Capital-at-Risk':fs(nd['car'][m]),
+            })
         st.dataframe(pd.DataFrame(tbl),width='stretch',hide_index=True)
 
+        # ── Advantage chart ──
         st.markdown('### Advantage Analysis')
-        adv_ncd_ls = [nd['net'][yr*12-1]-ls['net'][yr*12-1] for yr in range(1,p.horizon+1)]
-        adv_ncd_fd = [nd['net'][yr*12-1]-fd['net'][yr*12-1] for yr in range(1,p.horizon+1)]
+        adv_ncd_ls=[nd['net'][yr*12-1]-ls['net'][yr*12-1] for yr in range(1,p.horizon+1)]
+        adv_ncd_fd=[nd['net'][yr*12-1]-fd['net'][yr*12-1] for yr in range(1,p.horizon+1)]
         fig_a=go.Figure()
         fig_a.add_trace(go.Bar(x=list(range(1,p.horizon+1)),y=adv_ncd_ls,name='NCD vs Lump Sum',marker_color=[C['gn'] if v>=0 else C['rd'] for v in adv_ncd_ls]))
         fig_a.add_trace(go.Bar(x=list(range(1,p.horizon+1)),y=adv_ncd_fd,name='NCD vs FD+Eq',marker_color=C['cy'],opacity=.5))
         fig_a.update_layout(barmode='group',xaxis_title='Year',yaxis_title='Advantage (₹)')
-        st.plotly_chart(_lo(fig_a,'NCD System Advantage (green=NCD wins, red=Lump sum wins)',400),width='stretch')
+        st.plotly_chart(_lo(fig_a,'NCD Net Advantage (green = NCD wins, red = alternative wins)',380),width='stretch')
 
-        # Sensitivity
-        st.markdown('### Sensitivity Matrix (Net Wealth of NCD System)')
+        # ── Capital-at-risk evolution ──
+        st.markdown('### Capital-at-Risk Over Time')
+        fig_car=go.Figure()
+        fig_car.add_trace(go.Scatter(x=months,y=nd['car'],name='NCD: Capital in Equity',fill='tozeroy',fillcolor='rgba(255,195,0,0.12)',line=dict(color=C['g'],width=2)))
+        fig_car.add_hline(y=p.principal,line_dash='dash',line_color=C['cy'],annotation_text=f'Lump Sum: {fs(p.principal)} at risk from day 1',annotation_font_color=C['cy'])
+        fig_car.update_layout(xaxis_title='Month',yaxis_title='Capital Deployed in Equity (₹)')
+        st.plotly_chart(_lo(fig_car,'Capital-at-Risk: NCD System Gradually Deploys vs Lump Sum All-In',360),width='stretch')
+
+        # ── Real returns ──
+        st.markdown('### Inflation-Adjusted (Real) Returns')
+        yrs_range=list(range(1,p.horizon+1))
+        infl_factors=[(1+p.inflation)**yr for yr in yrs_range]
+        fig_real=go.Figure()
+        fig_real.add_trace(go.Scatter(x=yrs_range,y=[nd['total'][yr*12-1]/f for yr,f in zip(yrs_range,infl_factors)],name='NCD Real',mode='lines+markers',line=dict(color=C['g'],width=2.5),marker=dict(size=6)))
+        fig_real.add_trace(go.Scatter(x=yrs_range,y=[ls['total'][yr*12-1]/f for yr,f in zip(yrs_range,infl_factors)],name='Lump Real',mode='lines+markers',line=dict(color=C['cy'],width=2,dash='dash'),marker=dict(size=5)))
+        fig_real.add_trace(go.Scatter(x=yrs_range,y=[fd['total'][yr*12-1]/f for yr,f in zip(yrs_range,infl_factors)],name='FD Real',mode='lines+markers',line=dict(color=C['or_'],width=1.5,dash='dashdot'),marker=dict(size=4)))
+        fig_real.add_hline(y=p.principal,line_dash='dot',line_color=C['mu'],annotation_text='Original Capital')
+        fig_real.update_layout(xaxis_title='Year',yaxis_title="Real Value (Today's ₹)")
+        st.plotly_chart(_lo(fig_real,f'Real Wealth at {fp(p.inflation,0)} Inflation',380),width='stretch')
+
+        # ── Sensitivity ──
+        st.markdown('### Sensitivity Matrix (Net Wealth)')
         sens=eng.sens([.08,.09,.10,.118,.13,.14,.15],[.07,.10,.13,.16,.19])
         z=sens.values/1e5
         fgs=go.Figure(go.Heatmap(z=z,x=sens.columns.tolist(),y=sens.index.tolist(),colorscale=[[0,'#1B2A4A'],[.5,'#FFC300'],[1,'#FF5252']],text=[[f'₹{v:.1f}L' for v in r] for r in z],texttemplate='%{text}',textfont=dict(size=10,color='white'),colorbar=dict(title='₹L')))
         fgs.update_layout(xaxis_title='Equity Return',yaxis_title='NCD Yield')
-        st.plotly_chart(_lo(fgs,'Net Wealth — NCD Yield × Equity Return',420),width='stretch')
+        st.plotly_chart(_lo(fgs,'NCD Yield × Equity Return → Net Wealth',420),width='stretch')
 
     # ── TAB 3: STRESS TEST ────────────────────────────────────
     with t3:
         st.markdown('## Stress Test — Random & Historical Returns')
+        st.markdown(f'<div class="th">Unlike deterministic projections (constant {fp(p.eq_return,0)}/year), this generates <strong>random year-by-year equity returns</strong> calibrated to Indian markets (≈{fp(EQ_VOL,0)} annual vol). Each seed = unique market history. Compare how NCD system vs Lump Sum behave through crashes, rallies, and sideways markets.</div>',unsafe_allow_html=True)
 
-        st.markdown('### Random Returns')
-        seed=st.number_input('Seed',value=42,step=1)
+        seed=st.number_input('Random Seed (change to regenerate)',value=42,step=1)
         feat=eng.stress_random(seed,1)[0]; ar=feat['ar']
+
+        # ── Return sequence + paths ──
+        st.markdown('### Generated Market Environment')
         cl,cr=st.columns(2)
         with cl:
             cb=[C['gn'] if r>=0 else C['rd'] for r in ar]
             fb=go.Figure(go.Bar(x=list(range(1,p.horizon+1)),y=ar*100,marker_color=cb,text=[fp(r) for r in ar],textposition='outside',textfont=dict(size=9,color=C['t2'])))
             fb.update_layout(xaxis_title='Year',yaxis_title='%',yaxis=dict(zeroline=True,zerolinecolor=C['mu']))
-            st.plotly_chart(_lo(fb,'Random Annual Returns',360),width='stretch')
+            st.plotly_chart(_lo(fb,'Random Annual Returns',340),width='stretch')
         with cr:
             fp2=go.Figure()
             fp2.add_trace(go.Scatter(x=months,y=feat['ncd_path'],name='NCD System',line=dict(color=C['g'],width=2.5)))
             fp2.add_trace(go.Scatter(x=months,y=feat['ls_path'],name='Lump Sum',line=dict(color=C['cy'],width=2,dash='dash')))
             fp2.add_hline(y=p.principal,line_dash='dot',line_color=C['mu'])
-            st.plotly_chart(_lo(fp2,'Path: NCD vs Lump Sum',360),width='stretch')
+            st.plotly_chart(_lo(fp2,'Wealth Path: NCD vs Lump Sum',340),width='stretch')
 
-        m1,m2,m3,m4=st.columns(4)
-        m1.metric('NCD Net',fs(feat['ncd_net']))
-        m2.metric('Lump Net',fs(feat['ls_net']))
-        winner_txt = 'NCD' if feat['ncd_net']>feat['ls_net'] else 'Lump Sum'
+        # ── Key outcome metrics ──
+        st.markdown('### Outcome Metrics')
+        m1,m2,m3,m4,m5,m6=st.columns(6)
+        winner_txt='NCD' if feat['ncd_net']>feat['ls_net'] else 'Lump Sum'
+        m1.metric('NCD Net',fs(feat['ncd_net']),fp(feat['ncd_cagr'])+' CAGR')
+        m2.metric('Lump Net',fs(feat['ls_net']),fp(feat['ls_cagr'])+' CAGR')
         m3.metric('Winner',winner_txt,fs(abs(feat['ncd_net']-feat['ls_net'])))
-        avg_r = np.mean(ar)
-        m4.metric('Avg Annual Return',fp(avg_r))
+        m4.metric('Best Year',fp(max(ar)),f'Year {int(np.argmax(ar))+1}')
+        m5.metric('Worst Year',fp(min(ar)),f'Year {int(np.argmin(ar))+1}')
+        m6.metric('Avg Return',fp(np.mean(ar)),f'vs {fp(p.eq_return,0)} expected')
 
-        # 25 paths
-        st.markdown('### 25 Random Paths')
+        # ── Drawdown analysis ──
+        st.markdown('### Drawdown & Risk Analysis')
+        d1,d2,d3,d4=st.columns(4)
+        d1.metric('NCD Max Drawdown',fp(feat['ncd_mdd'],1),f'Month {feat["ncd_mdd_month"]}')
+        d2.metric('Lump Max Drawdown',fp(feat['ls_mdd'],1),f'Month {feat["ls_mdd_month"]}')
+        d3.metric('NCD Months Underwater',f'{feat["ncd_uw"]}/{p.N}',f'{feat["ncd_uw"]/p.N*100:.0f}% of time')
+        d4.metric('Lump Months Underwater',f'{feat["ls_uw"]}/{p.N}',f'{feat["ls_uw"]/p.N*100:.0f}% of time')
+
+        # Drawdown chart (underwater)
+        fig_uw=go.Figure()
+        fig_uw.add_trace(go.Scatter(x=months,y=feat['ncd_dd']*100,name='NCD Drawdown',fill='tozeroy',fillcolor='rgba(255,195,0,0.15)',line=dict(color=C['g'],width=1.5)))
+        fig_uw.add_trace(go.Scatter(x=months,y=feat['ls_dd']*100,name='Lump Drawdown',fill='tozeroy',fillcolor='rgba(0,188,212,0.10)',line=dict(color=C['cy'],width=1.2,dash='dash')))
+        fig_uw.update_layout(xaxis_title='Month',yaxis_title='Drawdown (%)')
+        st.plotly_chart(_lo(fig_uw,'Underwater Chart — Drawdown from Peak',340),width='stretch')
+
+        # ── Year-by-year detailed table ──
+        st.markdown('### Year-by-Year Detailed Comparison')
+        ytbl=[]
+        for yr in range(p.horizon):
+            nv=feat['ncd_year_vals'][yr]; lv=feat['ls_year_vals'][yr]
+            nn=feat['ncd_net_vals'][yr]; ln_=feat['ls_net_vals'][yr]
+            leader='NCD' if nv>lv else 'Lump'
+            ytbl.append({
+                'Year':yr+1,'Return':fp(ar[yr]),
+                'NCD Total':fs(nv),'Lump Total':fs(lv),
+                'NCD Net':fs(nn),'Lump Net':fs(ln_),
+                'Leader':leader,
+                'Gap':fs(abs(nv-lv)),
+                'NCD Capital at Risk':fs(feat['ncd_car_path'][yr*12+11] if yr*12+11<p.N else feat['ncd_car_path'][-1]),
+            })
+        st.dataframe(pd.DataFrame(ytbl),width='stretch',hide_index=True)
+
+        # ── Rolling 3Y returns ──
+        if feat['rolling3']:
+            st.markdown('### Rolling 3-Year CAGR')
+            r3=feat['rolling3']
+            fig_r3=go.Figure()
+            fig_r3.add_trace(go.Bar(x=[r['year'] for r in r3],y=[r['ncd_r3']*100 for r in r3],name='NCD 3Y CAGR',marker_color=C['g'],opacity=.8))
+            fig_r3.add_trace(go.Bar(x=[r['year'] for r in r3],y=[r['ls_r3']*100 for r in r3],name='Lump 3Y CAGR',marker_color=C['cy'],opacity=.6))
+            fig_r3.update_layout(barmode='group',xaxis_title='Ending Year',yaxis_title='3-Year CAGR (%)',yaxis=dict(zeroline=True,zerolinecolor=C['mu']))
+            st.plotly_chart(_lo(fig_r3,'Rolling 3-Year CAGR — NCD vs Lump Sum',360),width='stretch')
+
+        # ── Leadership tracker ──
+        st.markdown('### Year-End Leadership Tracker')
+        yl=feat['yr_leader']
+        fig_lead=go.Figure()
+        ncd_lead_cum=[sum(1 for x in yl[:i+1] if x=='NCD')/(i+1)*100 for i in range(len(yl))]
+        fig_lead.add_trace(go.Scatter(x=list(range(1,p.horizon+1)),y=ncd_lead_cum,name='NCD Lead %',fill='tozeroy',fillcolor='rgba(255,195,0,0.15)',line=dict(color=C['g'],width=2)))
+        fig_lead.add_hline(y=50,line_dash='dot',line_color=C['mu'],annotation_text='50% breakeven')
+        fig_lead.update_layout(xaxis_title='Year',yaxis_title='NCD Lead Rate (%)',yaxis=dict(range=[0,105]))
+        st.plotly_chart(_lo(fig_lead,f'NCD Leads in {feat["ncd_lead_yrs"]}/{p.horizon} Year-Ends',300),width='stretch')
+
+        # ── 25 paths with richer stats ──
+        st.markdown('### 25 Random Paths — Aggregate Analysis')
         multi=eng.stress_random(seed*1000,25); fm=go.Figure()
         nw=[r['ncd_net'] for r in multi]; lw=[r['ls_net'] for r in multi]
+        nm_dd=[r['ncd_mdd'] for r in multi]; lm_dd=[r['ls_mdd'] for r in multi]
+        ncagr=[r['ncd_cagr'] for r in multi]; lcagr=[r['ls_cagr'] for r in multi]
         for i,r in enumerate(multi):
             fm.add_trace(go.Scatter(x=months,y=r['ncd_path'],showlegend=(i==0),name='NCD' if i==0 else None,legendgroup='n',line=dict(color=C['g'],width=.7),opacity=.35))
-            fm.add_trace(go.Scatter(x=months,y=r['ls_path'],showlegend=(i==0),name='Lump Sum' if i==0 else None,legendgroup='l',line=dict(color=C['cy'],width=.6),opacity=.25))
+            fm.add_trace(go.Scatter(x=months,y=r['ls_path'],showlegend=(i==0),name='Lump' if i==0 else None,legendgroup='l',line=dict(color=C['cy'],width=.6),opacity=.25))
+        fm.add_trace(go.Scatter(x=months,y=nd['total'],name='Deterministic',line=dict(color='white',width=2,dash='dot')))
         fm.add_hline(y=p.principal,line_dash='dot',line_color=C['mu'])
-        st.plotly_chart(_lo(fm,'25 Paths — NCD (gold) vs Lump Sum (cyan)',460),width='stretch')
-        s1,s2,s3,s4=st.columns(4)
+        st.plotly_chart(_lo(fm,'25 Paths — NCD (gold) vs Lump Sum (cyan) vs Deterministic (white)',460),width='stretch')
+
         na_=np.array(nw); la_=np.array(lw)
-        s1.metric('NCD Mean',fs(na_.mean()))
-        s2.metric('Lump Mean',fs(la_.mean()))
+        s1,s2,s3,s4,s5,s6=st.columns(6)
+        s1.metric('NCD Mean Net',fs(na_.mean()))
+        s2.metric('Lump Mean Net',fs(la_.mean()))
         s3.metric('NCD Wins',f'{np.sum(na_>la_)}/25')
-        s4.metric('NCD Min',fs(na_.min()))
+        s4.metric('NCD Worst Case',fs(na_.min()))
+        s5.metric('Lump Worst Case',fs(la_.min()))
+        s6.metric('NCD Worst DD',fp(min(nm_dd),1))
+
+        # Multi-path summary table
+        st.markdown('### 25-Path Statistical Summary')
+        summ_data = {
+            'Metric': ['Mean Net Wealth','Median Net Wealth','Std Dev','Min (Worst)','Max (Best)','Mean CAGR','Worst CAGR','Mean Max Drawdown','Win Count'],
+            'NCD System': [fs(na_.mean()),fs(np.median(na_)),fs(na_.std()),fs(na_.min()),fs(na_.max()),fp(np.mean(ncagr)),fp(min(ncagr)),fp(np.mean(nm_dd),1),f'{np.sum(na_>la_)}/25'],
+            'Lump Sum': [fs(la_.mean()),fs(np.median(la_)),fs(la_.std()),fs(la_.min()),fs(la_.max()),fp(np.mean(lcagr)),fp(min(lcagr)),fp(np.mean(lm_dd),1),f'{np.sum(la_>na_)}/25'],
+        }
+        st.dataframe(pd.DataFrame(summ_data),width='stretch',hide_index=True)
 
         # Historical NIFTY
         st.markdown('### Historical NIFTY Backtest')
-        st.markdown(f'<div class="th">What if you started this system using <strong>actual NIFTY50 returns</strong>? This uses real calendar-year returns ({min(NIFTY_HIST.keys())}–{max(NIFTY_HIST.keys())}) to stress-test the system against what actually happened in Indian equity markets.</div>',unsafe_allow_html=True)
+        st.markdown(f'<div class="th">Using <strong>actual NIFTY50 calendar-year returns</strong> ({min(NIFTY_HIST.keys())}–{max(NIFTY_HIST.keys())}) to backtest every possible {p.horizon}-year window.</div>',unsafe_allow_html=True)
         valid_starts = [y for y in sorted(NIFTY_HIST.keys()) if y+p.horizon-1<=max(NIFTY_HIST.keys())]
         if valid_starts:
             htbl=[]

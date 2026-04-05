@@ -108,13 +108,14 @@ class Params:
     tds_rate: float = 0.10
     ltcg_rate: float = 0.125
     ltcg_exempt: float = 1_25_000
+    surcharge: float = 0.0
     inflation: float = 0.06
     fd_rate: float = 0.07
     savings_rate: float = 0.04
     mc_paths: int = 5000
 
     @property
-    def eff_tax(self): return self.tax_slab * (1 + self.cess)
+    def eff_tax(self): return self.tax_slab * (1 + self.cess) * (1 + self.surcharge)
     @property
     def gross_monthly(self): return self.principal * self.ncd_rate / 12
     @property
@@ -466,11 +467,20 @@ def main():
             expense_ratio = st.slider('MF Expense (%)', 0.0, 2.5, 0.5, 0.1) / 100
             seed = 42; mc_paths = 5000  # unused in deterministic
 
-        # Tax — always visible
-        st.markdown(f'<p class="sl">TAX (INDIA)</p>', unsafe_allow_html=True)
+        # Tax — all Indian tax params exposed
+        st.markdown(f'<p class="sl">TAX (INDIA FY 2025-26)</p>', unsafe_allow_html=True)
         tax_slab = st.selectbox('Income Tax Slab', [0.0, .05, .10, .15, .20, .25, .30],
                                 index=6, format_func=lambda x: f'{x:.0%}')
-        ltcg_rate = st.number_input('LTCG Rate (%)', value=12.5, step=0.5) / 100
+        cess = st.number_input('Health & Education Cess (%)', value=4.0, step=0.5,
+                               help='4% on tax amount') / 100
+        surcharge = st.number_input('Surcharge (%)', value=0.0, step=5.0,
+                                    help='10% if 50L-1Cr, 15% if 1-2Cr, 25% if 2-5Cr') / 100
+        ltcg_rate = st.number_input('Equity LTCG Rate (%)', value=12.5, step=0.5,
+                                    help='12.5% post Budget 2024') / 100
+        ltcg_exempt = st.number_input('LTCG Exemption (₹/FY)', value=1_25_000, step=25_000,
+                                      format='%d', help='₹1,25,000 per FY post Budget 2024')
+        tds_rate = st.number_input('NCD TDS Rate (%)', value=10.0, step=1.0,
+                                   help='10% if PAN provided, 20% without PAN') / 100
 
         # Benchmarks
         st.markdown(f'<p class="sl">BENCHMARKS</p>', unsafe_allow_html=True)
@@ -480,7 +490,9 @@ def main():
     # ── Build params & engine ─────────────────────────────────
     p = Params(principal=principal, ncd_rate=ncd_rate, horizon=horizon,
                eq_return=eq_drift, expense_ratio=expense_ratio,
-               tax_slab=tax_slab, ltcg_rate=ltcg_rate,
+               tax_slab=tax_slab, cess=cess, tds_rate=tds_rate,
+               ltcg_rate=ltcg_rate, ltcg_exempt=ltcg_exempt,
+               surcharge=surcharge,
                fd_rate=fd_rate, inflation=inflation, mc_paths=mc_paths)
     eng = Engine(p)
     months = np.arange(1, p.total_months + 1)
@@ -648,7 +660,9 @@ def main():
             # Tax section
             st.markdown('### Tax Structure')
             st.markdown(f'<div class="ab"><span class="tg">Tax Regime</span>'
-                f'<strong>NCD Interest:</strong> Slab {fp(p.tax_slab,0)} + Cess {fp(p.cess,0)} = {fp(p.eff_tax,1)}. TDS {fp(p.tds_rate,0)} at source.<br>'
+                f'<strong>NCD Interest:</strong> Slab {fp(p.tax_slab,0)} + Cess {fp(p.cess,0)}'
+                f'{" + Surcharge " + fp(p.surcharge,0) if p.surcharge > 0 else ""}'
+                f' = Effective {fp(p.eff_tax,1)}. TDS {fp(p.tds_rate,0)} at source.<br>'
                 f'<strong>LTCG:</strong> {fp(p.ltcg_rate,1)} on gains > {fi(p.ltcg_exempt)}/FY (per-FY exemption).</div>', unsafe_allow_html=True)
             st.dataframe(pd.DataFrame({
                 '': ['Total Wealth', 'Total Tax', 'Net Wealth', 'Capital-at-Risk'],
@@ -819,7 +833,10 @@ def main():
         with t3:
             st.markdown('## Monte Carlo Distribution')
             st.markdown(f'<div class="ab"><span class="tg">Adam · GBM</span>'
-                f'{p.mc_paths:,} paired paths. σ={fp(EQ_VOL,0)}. Drift-corrected. Same draws for NCD & Lump.</div>', unsafe_allow_html=True)
+                f'{p.mc_paths:,} paired paths. σ={fp(EQ_VOL,0)}. Drift-corrected. Same draws for NCD & Lump.<br>'
+                f'Tax: Slab {fp(p.tax_slab,0)} + Cess {fp(p.cess,0)}'
+                f'{" + Surcharge " + fp(p.surcharge,0) if p.surcharge > 0 else ""}'
+                f' = {fp(p.eff_tax,1)} on interest. LTCG {fp(p.ltcg_rate,1)} (exempt {fi(p.ltcg_exempt)}/FY). TDS {fp(p.tds_rate,0)}.</div>', unsafe_allow_html=True)
 
             c1, c2 = st.columns(2)
             with c1: st.plotly_chart(fan_chart(mc['ncd_pp'], months, CL['g'], 'NCD System', p.principal), width='stretch')

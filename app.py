@@ -733,36 +733,29 @@ def main():
     # 🌍 REAL WORLD MODE
     # ══════════════════════════════════════════════════════════
     else:
-        # Run deterministic for KPI baseline + MC for stochastic insights
-        with st.spinner(f'Calibrating ({p.mc_paths:,} simulations)...'):
-            mc = eng.monte_carlo()
-        ncd_det = eng.run_ncd(); lump_det = eng.run_lumpsum()
+        # Compute scenario from sidebar seed — KPIs reflect this scenario
+        sc = eng.scenario(seed); ar = sc['annual_r']
+        sc_ncd = sc['ncd']; sc_lump = sc['lump']
+        sc_winner = 'NCD' if sc_ncd['net'][-1] > sc_lump['net'][-1] else 'Lump Sum'
 
-        # KPIs — same structure as deterministic, values from MC median
+        # KPIs — same structure as deterministic, values from active scenario
         k1, k2, k3, k4, k5, k6 = st.columns(6)
-        k1.metric('NCD Net (Median)', fs(mc['ncd_pn'][50]),
-                  fp(cagr(mc['ncd_pn'][50], p.principal, p.horizon)) + ' CAGR')
-        k2.metric('Lump Net (Median)', fs(mc['lump_pn'][50]),
-                  fp(cagr(mc['lump_pn'][50], p.principal, p.horizon)) + ' CAGR')
+        k1.metric('NCD Net', fs(sc_ncd['net'][N]), fp(sc['ncd_cagr']) + ' CAGR')
+        k2.metric('Lump Sum Net', fs(sc_lump['net'][N]), fp(sc['lump_cagr']) + ' CAGR')
         k3.metric('Monthly SIP', fi(p.net_monthly), f'from {fp(p.ncd_rate,1)} yield')
-        # Median MF value: median NCD total - principal
-        median_mf = mc['ncd_pn'][50] + ncd_det['total_tax'][N]  # approximate MF from median net
-        k4.metric('NCD Principal', fs(p.principal), 'Returned at maturity')
-        k5.metric('Capital-at-Risk', fs(ncd_det['car'][N]), f'vs {fs(p.principal)} lump')
-        k6.metric('P(NCD > Lump)', fp(mc['p_ncd_wins'], 1),
-                  f'P(Lump Loss) {fp(mc["p_lump_loss"],1)}')
+        k4.metric('MF Built', fs(sc_ncd['mf'][N]), f'{fs(sc_ncd["gains"][N])} gains')
+        k5.metric('Capital-at-Risk', fs(sc_ncd['car'][N]), f'vs {fs(p.principal)} lump')
+        k6.metric('Winner', sc_winner, fs(abs(sc_ncd['net'][N] - sc_lump['net'][N])))
         st.markdown('<div class="dv"></div>', unsafe_allow_html=True)
 
         t1, t2, t3 = st.tabs(['🎯 SCENARIO', '📜 BACKTEST', '🎲 DISTRIBUTION'])
 
-        # ── Scenario ──────────────────────────────────────────
+        # ── Scenario (uses pre-computed sc) ───────────────────
         with t1:
             st.markdown('## Market Scenario')
             st.markdown(f'<div class="tb">Seed <strong>{seed}</strong> generates a unique {p.horizon}-year market. '
                 f'Equity drift ≈ {fp(p.eq_return,0)}, volatility ≈ {fp(EQ_VOL,0)}. '
                 f'NCD system and Lump Sum face <strong>identical returns</strong> — only the deployment strategy differs.</div>', unsafe_allow_html=True)
-
-            sc = eng.scenario(seed); ar = sc['annual_r']
 
             # Environment
             st.markdown('### Market Environment')
@@ -787,26 +780,25 @@ def main():
             # Paths
             st.markdown('### Wealth Path')
             fig = go.Figure()
-            fig.add_trace(go.Scatter(x=months, y=sc['ncd']['total'], name='NCD System', line=dict(color=CL['g'], width=2.5)))
-            fig.add_trace(go.Scatter(x=months, y=sc['lump']['total'], name='Lump Sum', line=dict(color=CL['cy'], width=2, dash='dash')))
+            fig.add_trace(go.Scatter(x=months, y=sc_ncd['total'], name='NCD System', line=dict(color=CL['g'], width=2.5)))
+            fig.add_trace(go.Scatter(x=months, y=sc_lump['total'], name='Lump Sum', line=dict(color=CL['cy'], width=2, dash='dash')))
             fig.add_hline(y=p.principal, line_dash='dot', line_color=CL['mu'])
             st.plotly_chart(lay(fig, 'NCD vs Lump — Same Returns', 400), width='stretch')
 
-            # Outcome
-            st.markdown('### Outcome')
-            w = 'NCD' if sc['ncd']['net'][-1] > sc['lump']['net'][-1] else 'Lump Sum'
+            # Outcome — drawdown & risk metrics (net/CAGR already in KPIs above)
+            st.markdown('### Drawdown & Risk')
             o1,o2,o3,o4,o5,o6 = st.columns(6)
-            o1.metric('NCD Net', fs(sc['ncd']['net'][-1]), fp(sc['ncd_cagr']))
-            o2.metric('Lump Net', fs(sc['lump']['net'][-1]), fp(sc['lump_cagr']))
-            o3.metric('Winner', w, fs(abs(sc['ncd']['net'][-1] - sc['lump']['net'][-1])))
-            o4.metric('NCD Max DD', fp(sc['n_mdd'], 1), f'vs {fp(sc["l_mdd"],1)} lump')
-            o5.metric('NCD Underwater', f'{sc["n_uw"]}/{p.total_months}', f'vs {sc["l_uw"]}/{p.total_months}')
-            o6.metric('NCD Leads', f'{sc["ncd_wins"]}/{p.horizon}', 'year-ends')
+            o1.metric('NCD Max DD', fp(sc['n_mdd'], 1), f'Month {sc["n_mm"]}')
+            o2.metric('Lump Max DD', fp(sc['l_mdd'], 1), f'Month {sc["l_mm"]}')
+            o3.metric('NCD Underwater', f'{sc["n_uw"]}/{p.total_months}', f'{sc["n_uw"]/p.total_months*100:.0f}% of time')
+            o4.metric('Lump Underwater', f'{sc["l_uw"]}/{p.total_months}', f'{sc["l_uw"]/p.total_months*100:.0f}% of time')
+            o5.metric('NCD Leads', f'{sc["ncd_wins"]}/{p.horizon}', 'year-ends')
+            o6.metric('Avg Return', fp(np.mean(ar)), f'vs {fp(p.eq_return,0)} expected')
 
             # Drawdown
             # Portfolio performance
             st.markdown('### Portfolio Performance — This Scenario')
-            perf_sc = eng.portfolio_metrics(sc['ncd'], sc['lump'], ' (this path)')
+            perf_sc = eng.portfolio_metrics(sc_ncd, sc_lump)
             st.dataframe(perf_sc, width='stretch', hide_index=True)
 
             st.markdown('### Drawdown from Peak')
@@ -910,6 +902,16 @@ def main():
                 f'{" + Surcharge " + fp(p.surcharge,0) if p.surcharge > 0 else ""}'
                 f' = {fp(p.eff_tax,1)} on interest. LTCG {fp(p.ltcg_rate,1)} (exempt {fi(p.ltcg_exempt)}/FY). TDS {fp(p.tds_rate,0)}.</div>', unsafe_allow_html=True)
 
+            with st.spinner(f'Running {p.mc_paths:,} simulations...'):
+                mc = eng.monte_carlo()
+
+            # Probability summary
+            p1,p2,p3,p4 = st.columns(4)
+            p1.metric('P(NCD > Lump)', fp(mc['p_ncd_wins'],1))
+            p2.metric('P(Capital Safe)', fp(mc['p_capital'],1))
+            p3.metric('P(Lump Loss)', fp(mc['p_lump_loss'],1))
+            p4.metric('P(2× Capital)', fp(mc['p_2x'],1))
+
             c1, c2 = st.columns(2)
             with c1: st.plotly_chart(fan_chart(mc['ncd_pp'], months, CL['g'], 'NCD System', p.principal), width='stretch')
             with c2: st.plotly_chart(fan_chart(mc['lump_pp'], months, CL['cy'], 'Lump Sum', p.principal), width='stretch')
@@ -927,7 +929,8 @@ def main():
             } for k in [5, 10, 25, 50, 75, 90, 95]]), width='stretch', hide_index=True)
 
             st.markdown('### Portfolio Metrics (Deterministic Baseline)')
-            perf_mc = eng.portfolio_metrics(ncd_det, lump_det, ' (expected)')
+            ncd_base = eng.run_ncd(); lump_base = eng.run_lumpsum()
+            perf_mc = eng.portfolio_metrics(ncd_base, lump_base, ' (expected)')
             st.dataframe(perf_mc, width='stretch', hide_index=True)
 
             st.markdown('### Risk Metrics')

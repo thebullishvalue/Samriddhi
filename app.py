@@ -204,6 +204,54 @@ class Engine:
         tax = (val - p.principal) * p.eff_tax
         return dict(total=val, net=val - tax)
 
+    def portfolio_metrics(self, ncd_result, lump_result, label_suffix=''):
+        """Compute comparative portfolio performance metrics for NCD vs Lump Sum."""
+        p = self.p; N = p.total_months - 1
+        ncd_total = ncd_result['total'][N]; lump_total = lump_result['total'][N]
+        ncd_net = ncd_result['net'][N]; lump_net = lump_result['net'][N]
+        ncd_car = ncd_result['car'][N]; lump_car = lump_result['car'][N]
+        ncd_gains = ncd_result.get('gains', np.zeros(1))[N] if 'gains' in ncd_result else ncd_result['mf'][N] - ncd_result['cum'][N]
+        lump_gains = lump_result.get('gains', np.zeros(1))[N] if 'gains' in lump_result else lump_total - p.principal
+        ncd_tax = ncd_result.get('total_tax', ncd_result.get('ltcg', np.zeros(p.total_months)))[N]
+        lump_tax = lump_result['ltcg'][N]
+        infl = (1 + p.inflation) ** p.horizon
+
+        return pd.DataFrame({
+            'Metric': [
+                'Total Wealth (Pre-Tax)', 'Net Wealth (Post-Tax)', 'Total Return',
+                'Pre-Tax CAGR', 'Post-Tax CAGR', 'Money Multiple',
+                'Total Tax Paid', 'Tax Drag (Tax / Gross Gains)',
+                'Capital-at-Risk in Equity', 'Net per ₹1 of Equity Risk',
+                'Real Wealth (Inflation Adj.)', 'Real CAGR',
+            ],
+            f'NCD System{label_suffix}': [
+                fs(ncd_total), fs(ncd_net),
+                fp((ncd_total - p.principal) / p.principal),
+                fp(cagr(ncd_total, p.principal, p.horizon)),
+                fp(cagr(ncd_net, p.principal, p.horizon)),
+                fx(ncd_total / p.principal),
+                fs(ncd_tax),
+                fp(ncd_tax / (ncd_gains + p.gross_monthly * p.total_months) if (ncd_gains + p.gross_monthly * p.total_months) > 0 else 0),
+                fs(ncd_car),
+                fx(ncd_net / ncd_car) if ncd_car > 0 else '—',
+                fs(ncd_total / infl),
+                fp(cagr(ncd_total / infl, p.principal, p.horizon)),
+            ],
+            f'Lump Sum{label_suffix}': [
+                fs(lump_total), fs(lump_net),
+                fp((lump_total - p.principal) / p.principal),
+                fp(cagr(lump_total, p.principal, p.horizon)),
+                fp(cagr(lump_net, p.principal, p.horizon)),
+                fx(lump_total / p.principal),
+                fs(lump_tax),
+                fp(lump_tax / lump_gains if lump_gains > 0 else 0),
+                fs(p.principal),
+                fx(lump_net / p.principal),
+                fs(lump_total / infl),
+                fp(cagr(lump_total / infl, p.principal, p.horizon)),
+            ],
+        })
+
     def closed_form_mf(self):
         """V(N) = S · [(1+r)^N - 1] / r"""
         p = self.p; r = p.monthly_r
@@ -555,6 +603,16 @@ def main():
             items_w = [(nm, cl, vl, dt, vl == winner_val) for nm, cl, vl, dt in items]
             scorecard(st.columns(5), items_w)
 
+            st.markdown('### Portfolio Performance Metrics')
+            st.markdown(f'<div class="ab"><span class="tg">All values are post-tax</span>'
+                f'Every metric below is computed after applying: Slab {fp(p.tax_slab,0)} + '
+                f'Cess {fp(p.cess,0)}{" + Surcharge "+fp(p.surcharge,0) if p.surcharge>0 else ""}'
+                f' = {fp(p.eff_tax,1)} on NCD interest, and {fp(p.ltcg_rate,1)} LTCG on equity gains '
+                f'(per-FY {fi(p.ltcg_exempt)} exemption). TDS {fp(p.tds_rate,0)} deducted at source.</div>',
+                unsafe_allow_html=True)
+            perf = eng.portfolio_metrics(ncd, lump)
+            st.dataframe(perf, width='stretch', hide_index=True)
+
             st.markdown('### Wealth Decomposition — NCD System')
             fig_d = go.Figure(go.Waterfall(
                 x=['Principal\n(returned)', 'Interest\nReinvested', 'Equity\nCompounding', 'Total'],
@@ -675,18 +733,24 @@ def main():
     # 🌍 REAL WORLD MODE
     # ══════════════════════════════════════════════════════════
     else:
-        # Run MC for KPIs (cached across tabs via session state)
+        # Run deterministic for KPI baseline + MC for stochastic insights
         with st.spinner(f'Calibrating ({p.mc_paths:,} simulations)...'):
             mc = eng.monte_carlo()
+        ncd_det = eng.run_ncd(); lump_det = eng.run_lumpsum()
 
-        # KPIs from MC
+        # KPIs — same structure as deterministic, values from MC median
         k1, k2, k3, k4, k5, k6 = st.columns(6)
-        k1.metric('NCD Median Net', fs(mc['ncd_pn'][50]), fp(cagr(mc['ncd_pn'][50], p.principal, p.horizon)))
-        k2.metric('5th–95th Range', f'{fs(mc["ncd_pn"][5])} – {fs(mc["ncd_pn"][95])}')
-        k3.metric('P(NCD > Lump)', fp(mc['p_ncd_wins'], 1))
-        k4.metric('P(Capital Safe)', fp(mc['p_capital'], 1))
-        k5.metric('P(Lump Loss)', fp(mc['p_lump_loss'], 1))
-        k6.metric('Break-Even', fp(mc['breakeven']), 'min equity return')
+        k1.metric('NCD Net (Median)', fs(mc['ncd_pn'][50]),
+                  fp(cagr(mc['ncd_pn'][50], p.principal, p.horizon)) + ' CAGR')
+        k2.metric('Lump Net (Median)', fs(mc['lump_pn'][50]),
+                  fp(cagr(mc['lump_pn'][50], p.principal, p.horizon)) + ' CAGR')
+        k3.metric('Monthly SIP', fi(p.net_monthly), f'from {fp(p.ncd_rate,1)} yield')
+        # Median MF value: median NCD total - principal
+        median_mf = mc['ncd_pn'][50] + ncd_det['total_tax'][N]  # approximate MF from median net
+        k4.metric('NCD Principal', fs(p.principal), 'Returned at maturity')
+        k5.metric('Capital-at-Risk', fs(ncd_det['car'][N]), f'vs {fs(p.principal)} lump')
+        k6.metric('P(NCD > Lump)', fp(mc['p_ncd_wins'], 1),
+                  f'P(Lump Loss) {fp(mc["p_lump_loss"],1)}')
         st.markdown('<div class="dv"></div>', unsafe_allow_html=True)
 
         t1, t2, t3 = st.tabs(['🎯 SCENARIO', '📜 BACKTEST', '🎲 DISTRIBUTION'])
@@ -740,6 +804,11 @@ def main():
             o6.metric('NCD Leads', f'{sc["ncd_wins"]}/{p.horizon}', 'year-ends')
 
             # Drawdown
+            # Portfolio performance
+            st.markdown('### Portfolio Performance — This Scenario')
+            perf_sc = eng.portfolio_metrics(sc['ncd'], sc['lump'], ' (this path)')
+            st.dataframe(perf_sc, width='stretch', hide_index=True)
+
             st.markdown('### Drawdown from Peak')
             fig_dd = go.Figure()
             fig_dd.add_trace(go.Scatter(x=months, y=sc['n_dd']*100, name='NCD', fill='tozeroy', fillcolor='rgba(255,195,0,.12)', line=dict(color=CL['g'], width=1.5)))
@@ -826,6 +895,9 @@ def main():
                     b1.metric('NCD Net', fs(bt['ncd_net']), fp(cagr(bt['ncd_total'], p.principal, p.horizon)))
                     b2.metric('Lump Net', fs(bt['lump_net']), fp(cagr(bt['lump_total'], p.principal, p.horizon)))
                     b3.metric('Winner', 'NCD' if bt['ncd_net'] > bt['lump_net'] else 'Lump')
+                    # Portfolio metrics for this historical period
+                    perf_bt = eng.portfolio_metrics(bt['ncd'], bt['lump'], f' ({sel}–{sel+p.horizon-1})')
+                    st.dataframe(perf_bt, width='stretch', hide_index=True)
             else:
                 st.info(f'Need {p.horizon}+ years of data. Reduce horizon.')
 
@@ -853,6 +925,10 @@ def main():
                 'Pctl': f'{k}th', 'NCD': fs(mc['ncd_pn'][k]), 'Lump': fs(mc['lump_pn'][k]),
                 'NCD vs Lump': fs(mc['ncd_pn'][k] - mc['lump_pn'][k])
             } for k in [5, 10, 25, 50, 75, 90, 95]]), width='stretch', hide_index=True)
+
+            st.markdown('### Portfolio Metrics (Deterministic Baseline)')
+            perf_mc = eng.portfolio_metrics(ncd_det, lump_det, ' (expected)')
+            st.dataframe(perf_mc, width='stretch', hide_index=True)
 
             st.markdown('### Risk Metrics')
             r1,r2,r3,r4 = st.columns(4)
